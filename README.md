@@ -1,6 +1,8 @@
 # FocusLog
 
 **FocusLog** is a terminal-based, lightweight, and fast focus timer and productivity tracker. Built with C and the `ncurses` library, it offers an aesthetic and efficient experience directly from the terminal.
+![Photo2](https://github.com/user-attachments/assets/808ac98a-3f5c-42db-9a20-897d394e8613)
+![Photo1](https://github.com/user-attachments/assets/b517074f-4413-41b6-a488-e941b506e17b)
 
 ---
 
