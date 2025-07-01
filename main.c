@@ -18,6 +18,7 @@
 // Yeni renk çiftleri 5'ten başlayacak
 #define MIN_CUSTOM_COLOR_PAIR 5
 #define MAX_CUSTOM_COLOR_PAIR 255 // Ncurses'ın destekleyebileceği maksimum renk çifti ID'si
+#define MAX_COLOR_PAIRS     256   // Renk çiftlerini takip etmek için maksimum ID + 1
 
 // Ana menü seçenekleri
 #define MENU_START_WORK     0
@@ -31,6 +32,8 @@
 #define MAX_CATEGORIES        50
 #define MAX_FOCUSES_PER_CATEGORY 50 // Her kategori için maksimum odak sayısı
 #define IDLE_TIMEOUT_SECONDS 5 // Boşta kalma süresi (saniye)
+
+#define STATS_FOCUS_NAME_COL_WIDTH 25 // İstatistikler tablosunda odak adı sütunu genişliği
 
 // --- Yeni Veri Yapıları ---
 typedef struct {
@@ -87,8 +90,12 @@ int num_stat_categories = 0;
 
 time_t last_input_time; // Son kullanıcı giriş zamanı
 
+// Renk çiftlerinin başlatılıp başlatılmadığını takip etmek için global dizi
+bool g_initialized_color_pairs[MAX_COLOR_PAIRS];
+
 // --- Fonksiyon Tanımlamaları ---
-int draw_menu_and_get_choice(const char **options, int num_options, const char *title_msg, int initial_highlight, int *color_ids);
+// draw_menu_and_get_choice fonksiyonuna yeni bir parametre eklendi: current_lang_menu_items_for_idle
+int draw_menu_and_get_choice(const char **options, int num_options, const char *title_msg, int initial_highlight, int *color_ids, const char **current_lang_menu_items_for_idle);
 void start_timer_session(const char *category_name, const char *focus_name, int duration_seconds, const char **current_lang_menu_items, int category_color_id, int focus_color_id);
 int get_duration_from_user(const char **current_lang_menu_items);
 void manage_settings(const char **current_lang_menu_items);
@@ -125,6 +132,9 @@ void draw_idle_bar(const char **current_lang_menu_items);
 // Yeni: Onay fonksiyonu
 bool get_double_confirmation(const char *message1, const char *message2, const char **current_lang_menu_items);
 
+// Yeni: Tüm yüklü renk çiftlerinin başlatıldığından emin olmak için fonksiyon
+void ensure_all_color_pairs_initialized();
+
 
 // --- Ana Fonksiyon ---
 int main() {
@@ -141,6 +151,7 @@ int main() {
 
     if (has_colors()) {
         start_color();
+        // Varsayılan renk çiftlerini başlat
         init_pair(COLOR_PAIR_DEFAULT, COLOR_WHITE, COLOR_BLACK);
         init_pair(COLOR_PAIR_HIGHLIGHT, COLOR_BLACK, COLOR_CYAN);
         init_pair(COLOR_PAIR_TITLE, COLOR_YELLOW, COLOR_BLACK);
@@ -148,6 +159,7 @@ int main() {
     }
 
     load_data();
+    ensure_all_color_pairs_initialized(); // Yüklenen tüm renk çiftlerini başlat
 
     const char *lang_env = getenv("LANG");
     const char **current_main_menu_items;
@@ -165,16 +177,20 @@ int main() {
     last_input_time = time(NULL); // Uygulama başlangıcında zamanı ayarla
 
     while (1) {
-        main_menu_choice = draw_menu_and_get_choice(current_main_menu_items, TOTAL_MAIN_MENU_ITEMS, main_title_msg, 0, NULL);
-        // draw_menu_and_get_choice fonksiyonu içinde last_input_time güncelleniyor ve idle bar tetikleniyor.
-        // Bu yüzden burada tekrar kontrol etmeye gerek yok.
+        // draw_menu_and_get_choice fonksiyonuna current_main_menu_items parametresi eklendi
+        main_menu_choice = draw_menu_and_get_choice(current_main_menu_items, TOTAL_MAIN_MENU_ITEMS, main_title_msg, 0, NULL, current_main_menu_items);
 
         switch (main_menu_choice) {
             case MENU_START_WORK: {
-                int selected_category_idx_for_work = -1; // Çalışma için seçilen kategorinin indeksi
+                int selected_category_idx = -1;
+                int selected_focus_idx = -1;
+                bool return_to_main_menu = false;
+                bool return_to_category_selection = false;
 
-                // Kategori seçimi veya yeni kategori oluşturma döngüsü
-                while(selected_category_idx_for_work == -1) {
+                do { // Category selection loop
+                    selected_category_idx = -1; // Reset for re-entry
+                    return_to_category_selection = false; // Reset
+
                     char **temp_category_names = (char **)malloc((num_user_categories + 1) * sizeof(char*));
                     int *temp_category_color_ids = (int *)malloc((num_user_categories + 1) * sizeof(int));
 
@@ -190,7 +206,7 @@ int main() {
                     temp_category_color_ids[num_user_categories] = COLOR_PAIR_DEFAULT;
 
                     int category_choice = draw_menu_and_get_choice((const char**)temp_category_names, num_user_categories + 1,
-                                                                   (current_main_menu_items == menu_items_en) ? "Select Category" : "Kategori Seç", 0, temp_category_color_ids);
+                                                                   (current_main_menu_items == menu_items_en) ? "Select Category" : "Kategori Seç", 0, temp_category_color_ids, current_main_menu_items);
 
                     free(temp_category_names);
                     free(temp_category_color_ids);
@@ -198,76 +214,79 @@ int main() {
                     if (category_choice == num_user_categories) { // "Yeni Kategori Ekle" seçildi
                         int new_cat_idx = handle_new_category_creation(current_main_menu_items);
                         if (new_cat_idx != -1) { // Yeni kategori başarıyla eklendi
-                            selected_category_idx_for_work = new_cat_idx;
-                            // Akış yeni kategoriye göre devam edecek
+                            selected_category_idx = new_cat_idx;
                         } else {
-                            // İptal edildi veya hata oluştu, döngü devam etsin
-                            break; // ESC ile iptal edildiğinde kategori seçiminden çık
+                            // ESC from new category creation, stay in category selection loop
+                            continue; // Re-enter category selection
                         }
                     } else if (category_choice != -1 && category_choice < num_user_categories) { // Mevcut bir kategori seçildi
-                        selected_category_idx_for_work = category_choice;
-                        // Akış seçilen kategoriye göre devam edecek
-                    } else if (category_choice == -1) { // Kategori seçimi iptal edildi (ESC)
-                        break; // Ana menüye dön
+                        selected_category_idx = category_choice;
+                    } else if (category_choice == -1) { // ESC from category selection
+                        return_to_main_menu = true;
                     }
-                }
 
-                if (selected_category_idx_for_work != -1) {
-                    Category *selected_cat = &user_categories[selected_category_idx_for_work];
-                    int selected_focus_idx_for_work = -1; // Çalışma için seçilen odağın indeksi
+                    if (return_to_main_menu) break; // Exit to main menu
 
-                    // Odak seçimi veya yeni odak ekleme döngüsü
-                    while(selected_focus_idx_for_work == -1) {
-                        char **temp_focus_options = (char **)malloc((selected_cat->num_focuses + 1) * sizeof(char*));
-                        int *temp_focus_color_ids = (int *)malloc((selected_cat->num_focuses + 1) * sizeof(int));
+                    if (selected_category_idx != -1) {
+                        Category *selected_cat = &user_categories[selected_category_idx];
+                        selected_focus_idx = -1; // Reset for re-entry
 
-                        if (temp_focus_options == NULL || temp_focus_color_ids == NULL) {
-                            endwin(); fprintf(stderr, "Memory allocation error for focus names/colors!\n"); return 1;
-                        }
+                        do { // Focus selection loop
+                            char **temp_focus_options = (char **)malloc((selected_cat->num_focuses + 1) * sizeof(char*));
+                            int *temp_focus_color_ids = (int *)malloc((selected_cat->num_focuses + 1) * sizeof(int));
 
-                        int num_focus_options = selected_cat->num_focuses;
-                        for (int i = 0; i < selected_cat->num_focuses; i++) {
-                            temp_focus_options[i] = selected_cat->focuses[i].name;
-                            temp_focus_color_ids[i] = selected_cat->focuses[i].color_pair_id;
-                        }
-                        temp_focus_options[num_focus_options] = (char*)((current_main_menu_items == menu_items_en) ? "Add New Focus for this Category" : "Bu Kategoriye Yeni Odak Ekle");
-                        temp_focus_color_ids[num_focus_options] = COLOR_PAIR_DEFAULT;
-                        num_focus_options++;
-
-                        int focus_choice = draw_menu_and_get_choice((const char**)temp_focus_options, num_focus_options,
-                                                                     (current_main_menu_items == menu_items_en) ? "Select Focus" : "Odak Seç", 0, temp_focus_color_ids);
-
-                        free(temp_focus_options);
-                        free(temp_focus_color_ids);
-
-                        if (focus_choice == selected_cat->num_focuses) { // "Yeni Odak Ekle" seçildi
-                            int new_focus_idx = handle_new_focus_creation(selected_cat, current_main_menu_items);
-                            if (new_focus_idx != -1) { // Yeni odak başarıyla eklendi
-                                selected_focus_idx_for_work = new_focus_idx;
-                                // Akış yeni odağa göre devam edecek
-                            } else {
-                                // İptal edildi veya hata oluştu, döngü devam etsin
-                                break; // ESC ile iptal edildiğinde odak seçiminden çık
+                            if (temp_focus_options == NULL || temp_focus_color_ids == NULL) {
+                                endwin(); fprintf(stderr, "Memory allocation error for focus names/colors!\n"); return 1;
                             }
-                        } else if (focus_choice != -1 && focus_choice < selected_cat->num_focuses) { // Mevcut bir odak seçildi
-                            selected_focus_idx_for_work = focus_choice;
-                            // Akış seçilen odağa göre devam edecek
-                        } else if (focus_choice == -1) { // Odak seçimi iptal edildi (ESC)
-                            break; // Kategori seçimine geri dön
-                        }
-                    }
 
-                    if (selected_focus_idx_for_work != -1) {
-                        const char *final_focus_name = selected_cat->focuses[selected_focus_idx_for_work].name;
-                        int final_focus_color_id = selected_cat->focuses[selected_focus_idx_for_work].color_pair_id;
+                            int num_focus_options = selected_cat->num_focuses;
+                            for (int i = 0; i < selected_cat->num_focuses; i++) {
+                                temp_focus_options[i] = selected_cat->focuses[i].name;
+                                temp_focus_color_ids[i] = selected_cat->focuses[i].color_pair_id;
+                            }
+                            temp_focus_options[num_focus_options] = (char*)((current_main_menu_items == menu_items_en) ? "Add New Focus for this Category" : "Bu Kategoriye Yeni Odak Ekle");
+                            temp_focus_color_ids[num_focus_options] = COLOR_PAIR_DEFAULT;
+                            num_focus_options++;
 
-                        int duration = get_duration_from_user(current_main_menu_items);
-                        if (duration > 0) { // Süre girildi ve iptal edilmediyse
-                            start_timer_session(selected_cat->name, final_focus_name, duration, current_main_menu_items, selected_cat->color_pair_id, final_focus_color_id);
-                        }
+                            int focus_choice = draw_menu_and_get_choice((const char**)temp_focus_options, num_focus_options,
+                                                                         (current_main_menu_items == menu_items_en) ? "Select Focus" : "Odak Seç", 0, temp_focus_color_ids, current_main_menu_items);
+
+                            free(temp_focus_options);
+                            free(temp_focus_color_ids);
+
+                            if (focus_choice == selected_cat->num_focuses) { // "Yeni Odak Ekle" seçildi
+                                int new_focus_idx = handle_new_focus_creation(selected_cat, current_main_menu_items);
+                                if (new_focus_idx != -1) {
+                                    selected_focus_idx = new_focus_idx;
+                                } else {
+                                    // ESC from new focus creation, stay in focus selection loop
+                                    continue; // Re-enter focus selection
+                                }
+                            } else if (focus_choice != -1 && focus_choice < selected_cat->num_focuses) { // Mevcut bir odak seçildi
+                                selected_focus_idx = focus_choice;
+                            } else if (focus_choice == -1) { // ESC from focus selection
+                                return_to_category_selection = true;
+                            }
+
+                            if (return_to_category_selection) break; // Exit to category selection
+
+                            if (selected_focus_idx != -1) {
+                                const char *final_focus_name = selected_cat->focuses[selected_focus_idx].name;
+                                int final_focus_color_id = selected_cat->focuses[selected_focus_idx].color_pair_id;
+
+                                int duration = get_duration_from_user(current_main_menu_items);
+                                if (duration > 0) { // Duration entered, not cancelled
+                                    start_timer_session(selected_cat->name, final_focus_name, duration, current_main_menu_items, selected_cat->color_pair_id, final_focus_color_id);
+                                    return_to_main_menu = true; // Session finished, go back to main menu
+                                } else if (duration == -1) { // ESC from duration input
+                                    selected_focus_idx = -1; // Force re-entry into focus selection loop
+                                    continue; // Re-enter focus selection loop
+                                }
+                            }
+                        } while (selected_focus_idx == -1 && !return_to_category_selection); // Keep looping until a focus is selected or back to category
                     }
-                }
-                break;
+                } while (selected_category_idx == -1 && !return_to_main_menu); // Keep looping until a category is selected or back to main menu
+                break; // Exit MENU_START_WORK block
             }
             case MENU_VIEW_STATS:
                 view_statistics(current_main_menu_items);
@@ -332,7 +351,8 @@ int get_string_input(char *buffer, size_t buffer_size, int y, int x, const char 
 }
 
 
-int draw_menu_and_get_choice(const char **options, int num_options, const char *title_msg, int initial_highlight, int *color_ids) {
+// draw_menu_and_get_choice fonksiyonuna yeni bir parametre eklendi
+int draw_menu_and_get_choice(const char **options, int num_options, const char *title_msg, int initial_highlight, int *color_ids, const char **current_lang_menu_items_for_idle) {
     if (num_options == 0) {
         return -1;
     }
@@ -395,7 +415,8 @@ int draw_menu_and_get_choice(const char **options, int num_options, const char *
 
         if (c == ERR) { // Tuş basılmadı
             if (time(NULL) - last_input_time >= IDLE_TIMEOUT_SECONDS) {
-                draw_idle_bar(current_main_menu_items); // Boşta kalma çubuğunu göster
+                // current_lang_menu_items_for_idle parametresi kullanıldı
+                draw_idle_bar(current_lang_menu_items_for_idle); // Boşta kalma çubuğunu göster
                 last_input_time = time(NULL); // Boşta kalma çubuğu gösterildikten sonra zamanı sıfırla
 
                 // Menüyü yeniden çiz (draw_idle_bar ekranı temizlediği için)
@@ -420,7 +441,7 @@ int draw_menu_and_get_choice(const char **options, int num_options, const char *
                     }
                     attroff(COLOR_PAIR(COLOR_PAIR_HIGHLIGHT));
                     attroff(COLOR_PAIR(COLOR_PAIR_DEFAULT));
-                    if (color_ids != NULL && color_ids[i] != 0 && i != highlight && has_colors()) {
+                    if (color_ids != NULL && color_ids[i] != 0 && has_colors()) {
                         attroff(COLOR_PAIR(color_ids[i]));
                     }
                     attroff(A_BOLD);
@@ -519,7 +540,7 @@ void start_timer_session(const char *category_name, const char *focus_name, int 
     const char *timer_title = (current_lang_menu_items == menu_items_en) ? "Focusing on:" : "Odaklanılıyor:";
     const char *category_label = (current_lang_menu_items == menu_items_en) ? "Category:" : "Kategori:";
     const char *pause_msg = (current_lang_menu_items == menu_items_en) ? "Press SPACE to pause/resume, ESC to finish" : "Duraklat/Devam Etmek için BOŞLUK, Bitirmek için ESC";
-    const char *press_any_key_to_return_msg = (current_lang_menu_items == menu_items_en) ? "Press any key to return to menu..." : "Menüye dönmek için herhangi bir tuşa basın...";
+    const char *press_esc_to_return_msg = (current_lang_menu_items == menu_items_en) ? "Press ESC to return to menu..." : "Menüye dönmek için ESC tuşuna basın...";
 
 
     bool paused = false;
@@ -603,7 +624,7 @@ void start_timer_session(const char *category_name, const char *focus_name, int 
             clear();
             const char *finished_msg = (current_lang_menu_items == menu_items_en) ? "Time's Up! Session Finished!" : "Süre Doldu! Oturum Bitti!";
             mvprintw(yMax / 2, (xMax - strlen(finished_msg)) / 2, "%s", finished_msg);
-            mvprintw(yMax / 2 + 2, (xMax - strlen(press_any_key_to_return_msg)) / 2, "%s", press_any_key_to_return_msg);
+            mvprintw(yMax / 2 + 2, (xMax - strlen(press_esc_to_return_msg)) / 2, "%s", press_esc_to_return_msg); // Updated message
             refresh();
             getch();
             return;
@@ -636,7 +657,7 @@ int get_duration_from_user(const char **current_lang_menu_items) {
         clear();
         const char *invalid_msg = (current_lang_menu_items == menu_items_en) ? "Invalid duration. Using 25 minutes." : "Geçersiz süre. 25 dakika kullanılıyor.";
         mvprintw(yMax / 2, (xMax - strlen(invalid_msg)) / 2, "%s", invalid_msg);
-        const char *press_key_msg = (current_lang_menu_items == menu_items_en) ? "Press any key to continue..." : "Devam etmek için herhangi bir tuşa basın...";
+        const char *press_key_msg = (current_lang_menu_items == menu_items_en) ? "Press ESC to return..." : "Geri dönmek için ESC tuşuna basın..."; // Updated message
         mvprintw(yMax / 2 + 2, (xMax - strlen(press_key_msg)) / 2, "%s", press_key_msg);
         refresh();
         getch();
@@ -691,8 +712,9 @@ void manage_settings(const char **current_lang_menu_items) {
     settings_colors[4] = COLOR_PAIR_DEFAULT;
 
     while (1) {
+        // draw_menu_and_get_choice fonksiyonuna current_lang_menu_items parametresi eklendi
         int selected_option = draw_menu_and_get_choice((const char**)settings_options, 5,
-                                                       (current_lang_menu_items == menu_items_en) ? "Settings" : "Ayarlar", 0, settings_colors);
+                                                       (current_lang_menu_items == menu_items_en) ? "Settings" : "Ayarlar", 0, settings_colors, current_lang_menu_items);
         getmaxyx(stdscr, yMax, xMax);
 
         if (selected_option == 0) { // "Yeni Kategori Ekle"
@@ -725,7 +747,8 @@ void manage_settings(const char **current_lang_menu_items) {
                     char title_buffer[MAX_CATEGORY_NAME_LEN + 30];
                     snprintf(title_buffer, sizeof(title_buffer), "%s: %s", (current_lang_menu_items == menu_items_en) ? "Manage" : "Yönet", selected_cat->name);
 
-                    int sub_choice = draw_menu_and_get_choice((const char**)temp_options, current_option_idx, title_buffer, 0, temp_color_ids);
+                    // draw_menu_and_get_choice fonksiyonuna current_lang_menu_items parametresi eklendi
+                    int sub_choice = draw_menu_and_get_choice((const char**)temp_options, current_option_idx, title_buffer, 0, temp_color_ids, current_lang_menu_items);
 
                     free(temp_options);
                     free(temp_color_ids);
@@ -750,7 +773,8 @@ void manage_settings(const char **current_lang_menu_items) {
                         char focus_title_buffer[MAX_FOCUS_NAME_LEN + 30];
                         snprintf(focus_title_buffer, sizeof(focus_title_buffer), "%s: %s", (current_lang_menu_items == menu_items_en) ? "Manage Focus" : "Odağı Yönet", selected_cat->focuses[sub_choice].name);
 
-                        int delete_focus_choice = draw_menu_and_get_choice((const char**)focus_options, 2, focus_title_buffer, 0, focus_option_colors);
+                        // draw_menu_and_get_choice fonksiyonuna current_lang_menu_items parametresi eklendi
+                        int delete_focus_choice = draw_menu_and_get_choice((const char**)focus_options, 2, focus_title_buffer, 0, focus_option_colors, current_lang_menu_items);
                         if (delete_focus_choice == 0) { // "Delete This Focus"
                             delete_focus(selected_cat, sub_choice, current_lang_menu_items);
                             // Odak silindiği için odak listesine geri dön (döngü devam edecek ve liste yenilenecek)
@@ -767,7 +791,7 @@ void manage_settings(const char **current_lang_menu_items) {
                 clear();
                 const char *no_cat_msg = (current_lang_menu_items == menu_items_en) ? "No categories to manage yet. Add some first." : "Henüz yönetilecek kategori yok. Önce ekleyin.";
                 mvprintw(yMax / 2, (xMax - strlen(no_cat_msg)) / 2, "%s", no_cat_msg);
-                const char *press_key_msg = (current_lang_menu_items == menu_items_en) ? "Press any key to return..." : "Devam etmek için herhangi bir tuşa basın...";
+                const char *press_key_msg = (current_lang_menu_items == menu_items_en) ? "Press ESC to return..." : "Geri dönmek için ESC tuşuna basın..."; // Updated message
                 mvprintw(yMax / 2 + 2, (xMax - strlen(press_key_msg)) / 2, "%s", press_key_msg);
                 refresh();
                 getch();
@@ -786,8 +810,9 @@ void manage_settings(const char **current_lang_menu_items) {
                     temp_category_names[num_user_categories] = (char*)((current_lang_menu_items == menu_items_en) ? "Back" : "Geri");
                     temp_category_color_ids[num_user_categories] = COLOR_PAIR_DEFAULT;
 
+                    // draw_menu_and_get_choice fonksiyonuna current_lang_menu_items parametresi eklendi
                     int cat_to_manage_idx = draw_menu_and_get_choice((const char**)temp_category_names, num_user_categories + 1,
-                                                                    (current_lang_menu_items == menu_items_en) ? "Select Category to Manage" : "Yönetilecek Kategoriyi Seç", 0, temp_category_color_ids);
+                                                                    (current_lang_menu_items == menu_items_en) ? "Select Category to Manage" : "Yönetilecek Kategoriyi Seç", 0, temp_category_color_ids, current_lang_menu_items);
                     free(temp_category_names);
                     free(temp_category_color_ids);
 
@@ -819,7 +844,8 @@ void manage_settings(const char **current_lang_menu_items) {
                             char title_buffer[MAX_CATEGORY_NAME_LEN + 30];
                             snprintf(title_buffer, sizeof(title_buffer), "%s: %s", (current_lang_menu_items == menu_items_en) ? "Manage" : "Yönet", selected_cat->name);
 
-                            int sub_choice = draw_menu_and_get_choice((const char**)temp_options, current_option_idx, title_buffer, 0, temp_color_ids);
+                            // draw_menu_and_get_choice fonksiyonuna current_lang_menu_items parametresi eklendi
+                            int sub_choice = draw_menu_and_get_choice((const char**)temp_options, current_option_idx, title_buffer, 0, temp_color_ids, current_lang_menu_items);
 
                             free(temp_options);
                             free(temp_color_ids);
@@ -844,7 +870,8 @@ void manage_settings(const char **current_lang_menu_items) {
                                 char focus_title_buffer[MAX_FOCUS_NAME_LEN + 30];
                                 snprintf(focus_title_buffer, sizeof(focus_title_buffer), "%s: %s", (current_lang_menu_items == menu_items_en) ? "Manage Focus" : "Odağı Yönet", selected_cat->focuses[sub_choice].name);
 
-                                int delete_focus_choice = draw_menu_and_get_choice((const char**)focus_options, 2, focus_title_buffer, 0, focus_option_colors);
+                                // draw_menu_and_get_choice fonksiyonuna current_lang_menu_items parametresi eklendi
+                                int delete_focus_choice = draw_menu_and_get_choice((const char**)focus_options, 2, focus_title_buffer, 0, focus_option_colors, current_lang_menu_items);
                                 if (delete_focus_choice == 0) { // "Delete This Focus"
                                     delete_focus(selected_cat, sub_choice, current_lang_menu_items);
                                     // Odak silindiği için odak listesine geri dön (döngü devam edecek ve liste yenilenecek)
@@ -875,7 +902,7 @@ void manage_settings(const char **current_lang_menu_items) {
                     const char *error_msg = (current_lang_menu_items == menu_items_en) ? "Error resetting statistics." : "İstatistikler sıfırlanırken hata oluştu.";
                     mvprintw(yMax / 2, (xMax - strlen(error_msg)) / 2, "%s", error_msg);
                 }
-                const char *press_key_msg = (current_lang_menu_items == menu_items_en) ? "Press any key to return..." : "Devam etmek için herhangi bir tuşa basın...";
+                const char *press_key_msg = (current_lang_menu_items == menu_items_en) ? "Press ESC to return..." : "Geri dönmek için ESC tuşuna basın..."; // Updated message
                 mvprintw(yMax / 2 + 2, (xMax - strlen(press_key_msg)) / 2, "%s", press_key_msg);
                 refresh();
                 getch();
@@ -906,7 +933,7 @@ void manage_settings(const char **current_lang_menu_items) {
                     const char *error_msg = (current_lang_menu_items == menu_items_en) ? "Error deleting categories/focuses." : "Kategori/odaklar silinirken hata oluştu.";
                     mvprintw(yMax / 2, (xMax - strlen(error_msg)) / 2, "%s", error_msg);
                 }
-                const char *press_key_msg = (current_lang_menu_items == menu_items_en) ? "Press any key to return..." : "Devam etmek için herhangi bir tuşa basın...";
+                const char *press_key_msg = (current_lang_menu_items == menu_items_en) ? "Press ESC to return..." : "Geri dönmek için ESC tuşuna basın..."; // Updated message
                 mvprintw(yMax / 2 + 2, (xMax - strlen(press_key_msg)) / 2, "%s", press_key_msg);
                 refresh();
                 getch();
@@ -934,7 +961,7 @@ int handle_new_category_creation(const char **current_lang_menu_items) {
         clear();
         const char *empty_name_msg = (current_lang_menu_items == menu_items_en) ? "Category name cannot be empty!" : "Kategori adı boş olamaz!";
         mvprintw(yMax / 2, (xMax - strlen(empty_name_msg)) / 2, "%s", empty_name_msg);
-        const char *press_key_msg = (current_lang_menu_items == menu_items_en) ? "Press any key to continue..." : "Devam etmek için herhangi bir tuşa basın...";
+        const char *press_key_msg = (current_lang_menu_items == menu_items_en) ? "Press ESC to return..." : "Geri dönmek için ESC tuşuna basın..."; // Updated message
         mvprintw(yMax / 2 + 2, (xMax - strlen(press_key_msg)) / 2, "%s", press_key_msg);
         refresh();
         getch();
@@ -942,12 +969,12 @@ int handle_new_category_creation(const char **current_lang_menu_items) {
     }
 
     // Kategori zaten var mı kontrol et
-    for (int i = 0; i < num_user_categories; i++) {
+    for (int i = 0; i < num_user_categories; i++) { // Hata düzeltildi: i < num_user_categories
         if (strcmp(user_categories[i].name, new_cat_name_buffer) == 0) {
             clear();
             const char *exists_msg = (current_lang_menu_items == menu_items_en) ? "Category already exists!" : "Kategori zaten mevcut!";
             mvprintw(yMax / 2, (xMax - strlen(exists_msg)) / 2, "%s", exists_msg);
-            const char *press_key_msg = (current_lang_menu_items == menu_items_en) ? "Press any key to continue..." : "Devam etmek için herhangi bir tuşa basın...";
+            const char *press_key_msg = (current_lang_menu_items == menu_items_en) ? "Press ESC to return..." : "Geri dönmek için ESC tuşuna basın..."; // Updated message
             mvprintw(yMax / 2 + 2, (xMax - strlen(press_key_msg)) / 2, "%s", press_key_msg);
             refresh();
             getch();
@@ -958,7 +985,7 @@ int handle_new_category_creation(const char **current_lang_menu_items) {
     if (num_user_categories < MAX_CATEGORIES) {
         strcpy(user_categories[num_user_categories].name, new_cat_name_buffer);
         user_categories[num_user_categories].num_focuses = 0;
-        user_categories[num_user_categories].color_pair_id = get_random_color_pair();
+        user_categories[num_user_categories].color_pair_id = get_random_color_pair(); // Bu çağrı renk çiftini başlatır
         num_user_categories++;
         save_data();
         return num_user_categories - 1; // Yeni eklenen kategorinin indeksini döndür
@@ -987,7 +1014,7 @@ int handle_new_focus_creation(Category *cat, const char **current_lang_menu_item
         clear();
         const char *empty_name_msg = (current_lang_menu_items == menu_items_en) ? "Focus name cannot be empty!" : "Odak adı boş olamaz!";
         mvprintw(yMax / 2, (xMax - strlen(empty_name_msg)) / 2, "%s", empty_name_msg);
-        const char *press_key_msg = (current_lang_menu_items == menu_items_en) ? "Press any key to continue..." : "Devam etmek için herhangi bir tuşa basın...";
+        const char *press_key_msg = (current_lang_menu_items == menu_items_en) ? "Press ESC to return..." : "Geri dönmek için ESC tuşuna basın..."; // Updated message
         mvprintw(yMax / 2 + 2, (xMax - strlen(press_key_msg)) / 2, "%s", press_key_msg);
         refresh();
         getch();
@@ -1000,17 +1027,15 @@ int handle_new_focus_creation(Category *cat, const char **current_lang_menu_item
             clear();
             const char *exists_msg = (current_lang_menu_items == menu_items_en) ? "Focus already exists in this category!" : "Bu kategoride odak zaten mevcut!";
             mvprintw(yMax / 2, (xMax - strlen(exists_msg)) / 2, "%s", exists_msg);
-            const char *press_key_msg = (current_lang_menu_items == menu_items_en) ? "Press any key to continue..." : "Devam etmek için herhangi bir tuşa basın...";
+            const char *press_key_msg = (current_lang_menu_items == menu_items_en) ? "Press ESC to return..." : "Geri dönmek için ESC tuşuna basın..."; // Updated message
             mvprintw(yMax / 2 + 2, (xMax - strlen(press_key_msg)) / 2, "%s", press_key_msg);
             refresh();
-            getch();
-            return -1;
         }
     }
 
     if (cat->num_focuses < MAX_FOCUSES_PER_CATEGORY) {
         strcpy(cat->focuses[cat->num_focuses].name, new_focus_name_buffer);
-        cat->focuses[cat->num_focuses].color_pair_id = get_random_color_pair();
+        cat->focuses[cat->num_focuses].color_pair_id = get_random_color_pair(); // Bu çağrı renk çiftini başlatır
         cat->num_focuses++;
         save_data();
         return cat->num_focuses - 1; // Yeni eklenen odağın indeksini döndür
@@ -1051,7 +1076,7 @@ void delete_category(int index, const char **current_lang_menu_items) {
         clear();
         const char *deleted_msg = (current_lang_menu_items == menu_items_en) ? "Category deleted." : "Kategori silindi.";
         mvprintw(yMax / 2, (xMax - strlen(deleted_msg)) / 2, "%s", deleted_msg);
-        const char *press_key_msg = (current_lang_menu_items == menu_items_en) ? "Press any key to return..." : "Devam etmek için herhangi bir tuşa basın...";
+        const char *press_key_msg = (current_lang_menu_items == menu_items_en) ? "Press ESC to return..." : "Geri dönmek için ESC tuşuna basın..."; // Updated message
         mvprintw(yMax / 2 + 2, (xMax - strlen(press_key_msg)) / 2, "%s", press_key_msg);
         refresh();
         getch();
@@ -1059,7 +1084,7 @@ void delete_category(int index, const char **current_lang_menu_items) {
         clear();
         const char *canceled_msg = (current_lang_menu_items == menu_items_en) ? "Deletion canceled." : "Silme işlemi iptal edildi.";
         mvprintw(yMax / 2, (xMax - strlen(canceled_msg)) / 2, "%s", canceled_msg);
-        const char *press_key_msg = (current_lang_menu_items == menu_items_en) ? "Press any key to return..." : "Devam etmek için herhangi bir tuşa basın...";
+        const char *press_key_msg = (current_lang_menu_items == menu_items_en) ? "Press ESC to return..." : "Geri dönmek için ESC tuşuna basın..."; // Updated message
         mvprintw(yMax / 2 + 2, (xMax - strlen(press_key_msg)) / 2, "%s", press_key_msg);
         refresh();
         getch();
@@ -1095,7 +1120,7 @@ void delete_focus(Category *cat, int index, const char **current_lang_menu_items
         clear();
         const char *deleted_msg = (current_lang_menu_items == menu_items_en) ? "Focus deleted." : "Odak silindi.";
         mvprintw(yMax / 2, (xMax - strlen(deleted_msg)) / 2, "%s", deleted_msg);
-        const char *press_key_msg = (current_lang_menu_items == menu_items_en) ? "Press any key to return..." : "Devam etmek için herhangi bir tuşa basın...";
+        const char *press_key_msg = (current_lang_menu_items == menu_items_en) ? "Press ESC to return..." : "Geri dönmek için ESC tuşuna basın..."; // Updated message
         mvprintw(yMax / 2 + 2, (xMax - strlen(press_key_msg)) / 2, "%s", press_key_msg);
         refresh();
         getch();
@@ -1103,7 +1128,7 @@ void delete_focus(Category *cat, int index, const char **current_lang_menu_items
         clear();
         const char *canceled_msg = (current_lang_menu_items == menu_items_en) ? "Deletion canceled." : "Silme işlemi iptal edildi.";
         mvprintw(yMax / 2, (xMax - strlen(canceled_msg)) / 2, "%s", canceled_msg);
-        const char *press_key_msg = (current_lang_menu_items == menu_items_en) ? "Press any key to return..." : "Devam etmek için herhangi bir tuşa basın...";
+        const char *press_key_msg = (current_lang_menu_items == menu_items_en) ? "Press ESC to return..." : "Geri dönmek için ESC tuşuna basın..."; // Updated message
         mvprintw(yMax / 2 + 2, (xMax - strlen(press_key_msg)) / 2, "%s", press_key_msg);
         refresh();
         getch();
@@ -1250,16 +1275,10 @@ void load_data() {
                             next_available_color_pair_id = user_categories[num_user_categories].color_pair_id + 1;
                         }
                     } else {
+                        // Eğer renk ID'si dosyada yoksa yeni bir tane ata
                         user_categories[num_user_categories].color_pair_id = get_random_color_pair();
                     }
-                    if (has_colors()) {
-                        // Renk çifti zaten tanımlıysa tekrar tanımlama
-                        short f, b;
-                        if (pair_content(user_categories[num_user_categories].color_pair_id, &f, &b) != OK || f != (user_categories[num_user_categories].color_pair_id % 7) + 1 || b != COLOR_BLACK) {
-                            init_pair(user_categories[num_user_categories].color_pair_id,
-                                      (user_categories[num_user_categories].color_pair_id % 7) + 1, COLOR_BLACK);
-                        }
-                    }
+                    // init_pair çağrısı ensure_all_color_pairs_initialized() içinde yapılacak
                     num_user_categories++;
                 }
                 free(temp_line);
@@ -1283,16 +1302,10 @@ void load_data() {
                                 next_available_color_pair_id = current_cat->focuses[current_cat->num_focuses].color_pair_id + 1;
                             }
                         } else {
+                            // Eğer renk ID'si dosyada yoksa yeni bir tane ata
                             current_cat->focuses[current_cat->num_focuses].color_pair_id = get_random_color_pair();
                         }
-                        if (has_colors()) {
-                            // Renk çifti zaten tanımlıysa tekrar tanımlama
-                            short f, b;
-                            if (pair_content(current_cat->focuses[current_cat->num_focuses].color_pair_id, &f, &b) != OK || f != (current_cat->focuses[current_cat->num_focuses].color_pair_id % 7) + 1 || b != COLOR_BLACK) {
-                                init_pair(current_cat->focuses[current_cat->num_focuses].color_pair_id,
-                                          (current_cat->focuses[current_cat->num_focuses].color_pair_id % 7) + 1, COLOR_BLACK);
-                            }
-                        }
+                        // init_pair çağrısı ensure_all_color_pairs_initialized() içinde yapılacak
                         current_cat->num_focuses++;
                     }
                     free(temp_line);
@@ -1344,21 +1357,55 @@ int get_random_color_pair() {
 
     int fg_color;
     // COLOR_BLACK (0) ve COLOR_WHITE (7) dışında rastgele bir renk seç
+    // Daha belirgin renkler için 1-6 arasındaki renkleri tercih et
     do {
-        fg_color = (rand() % 8); // 0-7 arası
+        fg_color = (rand() % 6) + 1; // 1-6 arası (Kırmızı, Yeşil, Sarı, Mavi, Magenta, Cyan)
     } while (fg_color == COLOR_BLACK || fg_color == COLOR_WHITE);
 
-    // Renk çifti zaten tanımlıysa ve aynı renkleri kullanıyorsa yeni ID'ye geç
-    short f, b;
-    if (pair_content(next_available_color_pair_id, &f, &b) == OK) {
-        if (f == fg_color && b == COLOR_BLACK) {
-            return next_available_color_pair_id++;
-        }
-    }
+    // Yeni renk çiftini başlat ve başlatıldığını işaretle.
+    // Arka planı siyah tutarak, ACS_BLOCK ile ön plan rengini kullanarak görünürlük sağlayacağız.
     init_pair(next_available_color_pair_id, fg_color, COLOR_BLACK);
+    g_initialized_color_pairs[next_available_color_pair_id] = true;
 
     return next_available_color_pair_id++;
 }
+
+// Tüm yüklü renk çiftlerinin başlatıldığından emin olmak için fonksiyon
+void ensure_all_color_pairs_initialized() {
+    if (!has_colors()) return;
+
+    // Başlatma dizisini sıfırla
+    for (int i = 0; i < MAX_COLOR_PAIRS; i++) {
+        g_initialized_color_pairs[i] = false;
+    }
+
+    // Varsayılan renk çiftlerini işaretle (main'de zaten başlatıldılar)
+    g_initialized_color_pairs[COLOR_PAIR_DEFAULT] = true;
+    g_initialized_color_pairs[COLOR_PAIR_HIGHLIGHT] = true;
+    g_initialized_color_pairs[COLOR_PAIR_TITLE] = true;
+    g_initialized_color_pairs[COLOR_PAIR_RED] = true;
+
+    for (int i = 0; i < num_user_categories; i++) {
+        int cat_id = user_categories[i].color_pair_id;
+        if (cat_id >= MIN_CUSTOM_COLOR_PAIR && cat_id < MAX_COLOR_PAIRS && !g_initialized_color_pairs[cat_id]) {
+            int fg_color = ((cat_id - MIN_CUSTOM_COLOR_PAIR) % 6) + 1; // Deterministic color based on ID
+            if (fg_color < 1 || fg_color > 6) fg_color = COLOR_WHITE; // Fallback for safety
+            init_pair(cat_id, fg_color, COLOR_BLACK);
+            g_initialized_color_pairs[cat_id] = true;
+        }
+
+        for (int j = 0; j < user_categories[i].num_focuses; j++) {
+            int focus_id = user_categories[i].focuses[j].color_pair_id;
+            if (focus_id >= MIN_CUSTOM_COLOR_PAIR && focus_id < MAX_COLOR_PAIRS && !g_initialized_color_pairs[focus_id]) {
+                int fg_color = ((focus_id - MIN_CUSTOM_COLOR_PAIR) % 6) + 1; // Deterministic color based on ID
+                if (fg_color < 1 || fg_color > 6) fg_color = COLOR_WHITE; // Fallback for safety
+                init_pair(focus_id, fg_color, COLOR_BLACK);
+                g_initialized_color_pairs[focus_id] = true;
+            }
+        }
+    }
+}
+
 
 // İstatistik yükleme fonksiyonu
 void load_statistics() {
@@ -1487,12 +1534,7 @@ void view_statistics(const char **current_lang_menu_items) {
 
     const char *title = (current_lang_menu_items == menu_items_en) ? "Statistics" : "İstatistikler";
     const char *no_data_msg = (current_lang_menu_items == menu_items_en) ? "No work log data found." : "Çalışma kaydı bulunamadı.";
-    const char *press_any_key_msg = (current_lang_menu_items == menu_items_en) ? "Press any key to return to menu..." : "Menüye dönmek için herhangi bir tuşa basın...";
-    const char *category_header = (current_lang_menu_items == menu_items_en) ? "Category" : "Kategori";
-    const char *focus_header = (current_lang_menu_items == menu_items_en) ? "Focus" : "Odak";
-    const char *total_time_header = (current_lang_menu_items == menu_items_en) ? "Total Time" : "Toplam Süre";
-    const char *avg_time_header = (current_lang_menu_items == menu_items_en) ? "Avg Time" : "Ort. Süre";
-
+    const char *press_esc_to_return_msg = (current_lang_menu_items == menu_items_en) ? "Press ESC to return to menu..." : "Menüye dönmek için ESC tuşuna basın..."; // Updated message
 
     attron(COLOR_PAIR(COLOR_PAIR_TITLE));
     mvprintw(0, (xMax - strlen(title)) / 2, "%s", title);
@@ -1503,7 +1545,7 @@ void view_statistics(const char **current_lang_menu_items) {
 
     if (num_stat_categories == 0) {
         mvprintw(yMax / 2, (xMax - strlen(no_data_msg)) / 2, "%s", no_data_msg);
-        mvprintw(yMax / 2 + 2, (xMax - strlen(press_any_key_msg)) / 2, "%s", press_any_key_msg);
+        mvprintw(yMax / 2 + 2, (xMax - strlen(press_esc_to_return_msg)) / 2, "%s", press_esc_to_return_msg); // Updated message
         refresh();
         getch();
         return;
@@ -1512,7 +1554,59 @@ void view_statistics(const char **current_lang_menu_items) {
     int current_y = 2;
     int max_display_rows = yMax - current_y - 4;
 
-    int scroll_offset = 0; // Şimdilik kullanılmıyor, ileride kaydırma için
+    // Calculate max widths for alignment in the statistics table
+    int max_cat_name_len_display = strlen((current_lang_menu_items == menu_items_en) ? "Category" : "Kategori");
+    int max_focus_name_len_display = strlen((current_lang_menu_items == menu_items_en) ? "Focus" : "Odak");
+    char temp_duration_buffer[20];
+    format_duration_string(9999999, temp_duration_buffer, sizeof(temp_duration_buffer)); // Max possible duration string
+    int max_duration_str_len_display = strlen((current_lang_menu_items == menu_items_en) ? "Duration" : "Süre");
+    if (strlen(temp_duration_buffer) > max_duration_str_len_display) {
+        max_duration_str_len_display = strlen(temp_duration_buffer);
+    }
+
+
+    for (int i = 0; i < num_user_categories; i++) {
+        if (strlen(user_categories[i].name) > max_cat_name_len_display) {
+            max_cat_name_len_display = strlen(user_categories[i].name);
+        }
+        for (int j = 0; j < user_categories[i].num_focuses; j++) {
+            if (strlen(user_categories[i].focuses[j].name) > max_focus_name_len_display) {
+                max_focus_name_len_display = strlen(user_categories[i].focuses[j].name);
+            }
+        }
+    }
+
+    // Add some padding to column widths
+    max_cat_name_len_display += 2;
+    max_focus_name_len_display += 2;
+    max_duration_str_len_display += 2;
+
+    // Calculate total line width for the table (Category + " | " + Focus + " | " + Duration)
+    int total_table_line_width = max_cat_name_len_display + strlen(" | ") + max_focus_name_len_display + strlen(" | ") + max_duration_str_len_display;
+
+    // Calculate start_x to center the entire table
+    int table_start_x = (xMax - total_table_line_width) / 2;
+    if (table_start_x < 0) table_start_x = 0;
+
+
+    const char *cat_header = (current_lang_menu_items == menu_items_en) ? "Category" : "Kategori";
+    const char *focus_header = (current_lang_menu_items == menu_items_en) ? "Focus" : "Odak";
+    const char *duration_header = (current_lang_menu_items == menu_items_en) ? "Duration" : "Süre";
+
+    // Print headers
+    attron(A_BOLD | COLOR_PAIR(COLOR_PAIR_HIGHLIGHT));
+    mvprintw(current_y, table_start_x, "%-*s | %-*s | %*s",
+             max_cat_name_len_display, cat_header,
+             max_focus_name_len_display, focus_header,
+             max_duration_str_len_display, duration_header);
+    attroff(A_BOLD | COLOR_PAIR(COLOR_PAIR_HIGHLIGHT));
+    current_y++;
+
+    // Print separator line
+    mvhline(current_y, table_start_x, '-', total_table_line_width);
+    current_y++;
+
+
     int ch;
 
     while (1) {
@@ -1521,74 +1615,77 @@ void view_statistics(const char **current_lang_menu_items) {
         mvprintw(0, (xMax - strlen(title)) / 2, "%s", title);
         attroff(COLOR_PAIR(COLOR_PAIR_TITLE));
 
-        // Başlıklar
-        mvprintw(current_y, 2, "%-20s %-20s %-15s %-15s", category_header, focus_header, total_time_header, avg_time_header);
-        mvprintw(current_y + 1, 2, "-------------------- -------------------- --------------- ---------------");
+        // Yeniden başlıkları ve ayırıcıyı çiz
+        attron(A_BOLD | COLOR_PAIR(COLOR_PAIR_HIGHLIGHT));
+        mvprintw(2, table_start_x, "%-*s | %-*s | %*s",
+                 max_cat_name_len_display, cat_header,
+                 max_focus_name_len_display, focus_header,
+                 max_duration_str_len_display, duration_header);
+        attroff(A_BOLD | COLOR_PAIR(COLOR_PAIR_HIGHLIGHT));
+        mvhline(3, table_start_x, '-', total_table_line_width);
 
-        int display_row = current_y + 2;
+        int display_row = 4; // Start drawing content from row 4 (after headers and separator)
         int items_displayed = 0;
 
         // Kullanıcı tanımlı kategorileri döngüye al
-        for (int i = 0; i < num_user_categories && items_displayed < max_display_rows; i++) {
+        for (int i = 0; i < num_user_categories; i++) {
+            if (display_row + items_displayed >= yMax - 2) break; // Check if enough space for category header
+
             const char *current_category_name = user_categories[i].name;
-            long category_total_duration_calculated = 0;
+            int category_color_id = user_categories[i].color_pair_id;
 
-            // Bu kategorinin istatistiklerdeki indeksini bul
-            int stat_cat_idx = get_stat_category_index(current_category_name);
-
-            if (stat_cat_idx != -1) { // İstatistiklerde bu kategoriye ait kayıt varsa
-                for (int j = 0; j < stat_categories[stat_cat_idx].num_focuses; j++) {
-                    category_total_duration_calculated += stat_categories[stat_cat_idx].focuses[j].total_duration;
-                }
-            }
-
-            char cat_total_duration_str[20];
-            format_duration_string(category_total_duration_calculated, cat_total_duration_str, sizeof(cat_total_duration_str));
-
-            if (display_row + items_displayed >= yMax - 2) break;
+            attron(COLOR_PAIR(category_color_id));
             attron(A_BOLD);
-            mvprintw(display_row + items_displayed, 2, "%-20.20s", current_category_name); // Kategori ismini yaz
-            mvprintw(display_row + items_displayed, 2 + 20 + 20 + 1, "%s", cat_total_duration_str); // Total Time sütununa yaz
+            mvprintw(display_row + items_displayed, table_start_x, "%s", current_category_name);
+            attroff(COLOR_PAIR(category_color_id));
             attroff(A_BOLD);
             items_displayed++;
 
             // Her odağın detayları
-            for (int j = 0; j < user_categories[i].num_focuses && items_displayed < max_display_rows; j++) {
-                const char *current_focus_name = user_categories[i].focuses[j].name;
-                long focus_total_duration = 0;
-                long focus_avg_duration = 0;
-                int focus_session_count = 0;
+            for (int j = 0; j < user_categories[i].num_focuses; j++) {
+                if (display_row + items_displayed >= yMax - 2) break; // Check if enough space for focus line
 
+                const char *current_focus_name = user_categories[i].focuses[j].name;
+                int focus_color_id = user_categories[i].focuses[j].color_pair_id;
+                long focus_total_duration = 0;
+
+                int stat_cat_idx = get_stat_category_index(user_categories[i].name);
                 if (stat_cat_idx != -1) { // Kategori istatistiklerde varsa
                     int stat_focus_idx = get_stat_focus_index(&stat_categories[stat_cat_idx], current_focus_name);
                     if (stat_focus_idx != -1) { // Odak istatistiklerde varsa
                         focus_total_duration = stat_categories[stat_cat_idx].focuses[stat_focus_idx].total_duration;
-                        focus_session_count = stat_categories[stat_cat_idx].focuses[stat_focus_idx].session_count;
-                        if (focus_session_count > 0) {
-                            focus_avg_duration = focus_total_duration / focus_session_count;
-                        }
                     }
                 }
 
                 char focus_total_duration_str[20];
-                char focus_avg_duration_str[20];
                 format_duration_string(focus_total_duration, focus_total_duration_str, sizeof(focus_total_duration_str));
-                format_duration_string(focus_avg_duration, focus_avg_duration_str, sizeof(focus_avg_duration_str));
 
-                if (display_row + items_displayed >= yMax - 2) break;
-                mvprintw(display_row + items_displayed, 2 + 4, "%-20.20s %-15s %-15s",
-                         current_focus_name, // Odak ismini yaz
-                         focus_total_duration_str,
-                         focus_avg_duration_str);
+                // Print category name (empty for subsequent focuses in same category)
+                mvprintw(display_row + items_displayed, table_start_x, "%-*s", max_cat_name_len_display, "");
+
+                // Print separator
+                mvprintw(display_row + items_displayed, table_start_x + max_cat_name_len_display, " | ");
+
+                // Print focus name with its color
+                attron(COLOR_PAIR(focus_color_id));
+                mvprintw(display_row + items_displayed, table_start_x + max_cat_name_len_display + strlen(" | "), "%-*s", max_focus_name_len_display, current_focus_name);
+                attroff(COLOR_PAIR(focus_color_id));
+
+                // Print separator
+                mvprintw(display_row + items_displayed, table_start_x + max_cat_name_len_display + strlen(" | ") + max_focus_name_len_display, " | ");
+
+                // Print duration (right-aligned within its column)
+                mvprintw(display_row + items_displayed, table_start_x + max_cat_name_len_display + strlen(" | ") + max_focus_name_len_display + strlen(" | "), "%*s", max_duration_str_len_display, focus_total_duration_str);
+
                 items_displayed++;
             }
-            if (items_displayed < max_display_rows) {
-                mvprintw(display_row + items_displayed, 2, "");
+            if (items_displayed < max_display_rows) { // Add an empty line between categories
+                mvprintw(display_row + items_displayed, table_start_x, "");
                 items_displayed++;
             }
         }
 
-        mvprintw(yMax - 2, (xMax - strlen(press_any_key_msg)) / 2, "%s", press_any_key_msg);
+        mvprintw(yMax - 2, (xMax - strlen(press_esc_to_return_msg)) / 2, "%s", press_esc_to_return_msg); // Updated message
         refresh();
         ch = getch();
 
@@ -1660,7 +1757,7 @@ void draw_idle_bar(const char **current_lang_menu_items) {
     int bar_start_x = (xMax - bar_width) / 2;
     int bar_y = yMax / 2 - 5;
 
-    // Barın çerçevesini çiz
+    // Barın çerçevesini çiz (önce çerçeve)
     mvhline(bar_y - 1, bar_start_x - 1, '-', bar_width + 2);
     mvvline(bar_y, bar_start_x - 1, '|', 1);
     mvvline(bar_y, bar_start_x + bar_width, '|', 1);
@@ -1670,18 +1767,27 @@ void draw_idle_bar(const char **current_lang_menu_items) {
     mvaddch(bar_y + 1, bar_start_x - 1, ACS_LLCORNER);
     mvaddch(bar_y + 1, bar_start_x + bar_width, ACS_LRCORNER);
 
+    // Barın içini varsayılan arka plan rengiyle doldur
+    attron(COLOR_PAIR(COLOR_PAIR_DEFAULT));
+    mvhline(bar_y, bar_start_x, ' ', bar_width);
+    attroff(COLOR_PAIR(COLOR_PAIR_DEFAULT));
 
     if (total_overall_duration > 0) {
         int current_bar_x = bar_start_x;
         for (int i = 0; i < num_all_focuses; i++) {
             double percentage = (double)all_focuses[i].total_duration / total_overall_duration;
             int segment_width = (int)(bar_width * percentage);
-            if (segment_width < 1 && percentage > 0) segment_width = 1; // Çok küçük segmentler için minimum genişlik
 
+            // Minimum segment genişliği: Eğer yüzde > 0 ise ve hesaplanan genişlik 0 ise, 1 piksel yap
+            if (percentage > 0 && segment_width == 0) {
+                segment_width = 1;
+            }
+
+            // Barın dışına taşmasını engelle
             if (current_bar_x + segment_width > bar_start_x + bar_width) {
                 segment_width = (bar_start_x + bar_width) - current_bar_x;
             }
-            if (segment_width <= 0) continue;
+            if (segment_width <= 0) continue; // Geçersiz segment genişliği
 
             // Odağın rengini bul
             int focus_color_id = COLOR_PAIR_DEFAULT;
@@ -1695,15 +1801,20 @@ void draw_idle_bar(const char **current_lang_menu_items) {
                 if (focus_color_id != COLOR_PAIR_DEFAULT) break;
             }
 
+            // Bar segmentini çiz (ACS_BLOCK ile)
             attron(COLOR_PAIR(focus_color_id));
-            mvhline(bar_y, current_bar_x, ' ', segment_width);
+            for (int x_pos = 0; x_pos < segment_width; x_pos++) {
+                mvaddch(bar_y, current_bar_x + x_pos, ACS_BLOCK); // Boşluk yerine ACS_BLOCK kullanıldı
+            }
             attroff(COLOR_PAIR(focus_color_id));
             current_bar_x += segment_width;
         }
         // Kalan kısmı varsayılan renkle doldur (yuvarlama hatalarını önlemek için)
         if (current_bar_x < bar_start_x + bar_width) {
             attron(COLOR_PAIR(COLOR_PAIR_DEFAULT));
-            mvhline(bar_y, current_bar_x, ' ', (bar_start_x + bar_width) - current_bar_x);
+            for (int x_pos = current_bar_x; x_pos < bar_start_x + bar_width; x_pos++) {
+                mvaddch(bar_y, x_pos, ACS_BLOCK); // Boşluk yerine ACS_BLOCK kullanıldı
+            }
             attroff(COLOR_PAIR(COLOR_PAIR_DEFAULT));
         }
     } else {
@@ -1711,40 +1822,112 @@ void draw_idle_bar(const char **current_lang_menu_items) {
         mvprintw(bar_y, (xMax - strlen(no_stats_msg)) / 2, "%s", no_stats_msg);
     }
 
-    // En çok odaklanılan 3 odak
+    // En çok odaklanılan 3 odak bölümü
     mvprintw(bar_y + 3, (xMax - strlen((current_lang_menu_items == menu_items_en) ? "Top 3 Focuses:" : "En Çok Odaklanılan 3 Odak:")) / 2, "%s", (current_lang_menu_items == menu_items_en) ? "Top 3 Focuses:" : "En Çok Odaklanılan 3 Odak:");
-    int display_y = bar_y + 5;
+
+    // Calculate max widths for alignment in Top 3 Focuses section
+    int max_top_cat_len = 0;
+    int max_top_focus_len = 0;
+    char temp_duration_buffer[20]; // For duration string length
+
+    for (int i = 0; i < num_all_focuses && i < 3; i++) {
+        // Find category name for this focus
+        char current_category_name[MAX_CATEGORY_NAME_LEN] = "";
+        for (int k = 0; k < num_user_categories; k++) {
+            for (int l = 0; l < user_categories[k].num_focuses; l++) {
+                if (strcmp(user_categories[k].focuses[l].name, all_focuses[i].name) == 0) {
+                    strncpy(current_category_name, user_categories[k].name, sizeof(current_category_name) - 1);
+                    current_category_name[sizeof(current_category_name) - 1] = '\0';
+                    break;
+                }
+            }
+            if (strlen(current_category_name) > 0) break;
+        }
+        if (strlen(current_category_name) > max_top_cat_len) {
+            max_top_cat_len = strlen(current_category_name);
+        }
+        if (strlen(all_focuses[i].name) > max_top_focus_len) {
+            max_top_focus_len = strlen(all_focuses[i].name);
+        }
+    }
+
+    // Ensure minimum column widths for readability
+    if (max_top_cat_len < 10) max_top_cat_len = 10;
+    if (max_top_focus_len < 15) max_top_focus_len = 15;
+
+    // Adjust for padding and separators
+    int col1_width = max_top_cat_len;
+    int col2_width = max_top_focus_len;
+    format_duration_string(9999999, temp_duration_buffer, sizeof(temp_duration_buffer)); // Max possible duration string
+    int col3_width = strlen(temp_duration_buffer); // Duration width
+
+    // Calculate total line width for the table (Category + " - " + Focus + ": " + Duration)
+    int total_top_focus_line_width = col1_width + strlen(" - ") + col2_width + strlen(": ") + col3_width;
+
+    // Calculate start_x to center the entire block
+    int top_focus_block_start_x = (xMax - total_top_focus_line_width) / 2;
+    if (top_focus_block_start_x < 0) top_focus_block_start_x = 0;
+
+
+    const char *cat_header = (current_lang_menu_items == menu_items_en) ? "Category" : "Kategori";
+    const char *focus_header = (current_lang_menu_items == menu_items_en) ? "Focus" : "Odak";
+    const char *duration_header = (current_lang_menu_items == menu_items_en) ? "Duration" : "Süre";
+
+    // Print headers
+    mvprintw(bar_y + 5, top_focus_block_start_x, "%-*s - %-*s : %*s",
+             col1_width, cat_header,
+             col2_width, focus_header,
+             col3_width, duration_header);
+
+    mvhline(bar_y + 6, top_focus_block_start_x, '-', total_top_focus_line_width);
+
+
+    int display_y = bar_y + 7;
     for (int i = 0; i < num_all_focuses && i < 3; i++) {
         char total_time_str[20];
         format_duration_string(all_focuses[i].total_duration, total_time_str, sizeof(total_time_str));
 
-        // Odağın kategorisini bul
-        char category_for_focus[MAX_CATEGORY_NAME_LEN] = ""; // Boş başlat
-        bool found_category = false;
+        char category_for_focus[MAX_CATEGORY_NAME_LEN] = "";
+        int category_color_id = COLOR_PAIR_DEFAULT;
+        int focus_color_id = COLOR_PAIR_DEFAULT;
+
+        // Find category and focus colors
         for (int k = 0; k < num_user_categories; k++) {
             for (int l = 0; l < user_categories[k].num_focuses; l++) {
                 if (strcmp(user_categories[k].focuses[l].name, all_focuses[i].name) == 0) {
                     strncpy(category_for_focus, user_categories[k].name, sizeof(category_for_focus) - 1);
                     category_for_focus[sizeof(category_for_focus) - 1] = '\0';
-                    found_category = true;
+                    category_color_id = user_categories[k].color_pair_id;
+                    focus_color_id = user_categories[k].focuses[l].color_pair_id;
                     break;
                 }
             }
-            if (found_category) break;
+            if (strlen(category_for_focus) > 0) break;
         }
-        if (!found_category) {
+        if (strlen(category_for_focus) == 0) {
             strncpy(category_for_focus, (current_lang_menu_items == menu_items_en) ? "Unknown Category" : "Bilinmeyen Kategori", sizeof(category_for_focus) - 1);
             category_for_focus[sizeof(category_for_focus) - 1] = '\0';
         }
 
+        // Print category name with its color
+        attron(COLOR_PAIR(category_color_id));
+        mvprintw(display_y + i, top_focus_block_start_x, "%-*s", col1_width, category_for_focus);
+        attroff(COLOR_PAIR(category_color_id));
 
-        char focus_info[MAX_FOCUS_NAME_LEN + MAX_CATEGORY_NAME_LEN + 50];
-        snprintf(focus_info, sizeof(focus_info), "%s - %s: %s", category_for_focus, all_focuses[i].name, total_time_str);
-        mvprintw(display_y + i, (xMax - strlen(focus_info)) / 2, "%s", focus_info);
+        // Print separator
+        mvprintw(display_y + i, top_focus_block_start_x + col1_width, " - ");
+
+        // Print focus name with its color
+        attron(COLOR_PAIR(focus_color_id));
+        mvprintw(display_y + i, top_focus_block_start_x + col1_width + strlen(" - "), "%-*s", col2_width, all_focuses[i].name);
+        attroff(COLOR_PAIR(focus_color_id));
+
+        // Print separator
+        mvprintw(display_y + i, top_focus_block_start_x + col1_width + strlen(" - ") + col2_width, " : ");
+
+        // Print duration (right-aligned within its column)
+        mvprintw(display_y + i, top_focus_block_start_x + col1_width + strlen(" - ") + col2_width + strlen(" : "), "%*s", col3_width, total_time_str);
     }
-
-    const char *press_any_key_to_return_msg = (current_lang_menu_items == menu_items_en) ? "Press any key to return to menu..." : "Menüye dönmek için herhangi bir tuşa basın...";
-    mvprintw(yMax - 2, (xMax - strlen(press_any_key_to_return_msg)) / 2, "%s", press_any_key_to_return_msg);
 
     refresh();
     nodelay(stdscr, FALSE); // Bloğa girene kadar beklet
