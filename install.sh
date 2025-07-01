@@ -1,5 +1,5 @@
 #!/bin/bash
-
+1
 # FocusLog Kurulum Betiği
 # Bu betik, FocusLog uygulamasını GitHub deposundan indirir
 # ve ardından sisteminize kurmak için setup.sh'ı çalıştırır.
