@@ -35,7 +35,7 @@ check_command() {
 # Debian/Ubuntu için bağımlılıkları yükler
 install_dependencies_apt() {
     log_info "Debian/Ubuntu için bağımlılıklar yükleniyor..."
-    sudo apt update
+    # 'apt update' kaldırıldı, sadece bağımlılıklar yüklenecek
     sudo apt install -y build-essential libncurses-dev || log_error "Debian/Ubuntu bağımlılıkları yüklenirken hata oluştu."
 }
 
@@ -48,7 +48,8 @@ install_dependencies_dnf() {
 # Arch Linux için bağımlılıkları yükler
 install_dependencies_pacman() {
     log_info "Arch Linux için bağımlılıklar yükleniyor..."
-    sudo pacman -Syu --noconfirm gcc make ncurses || log_error "Arch Linux bağımlılıkları yüklenirken hata oluştu."
+    # 'pacman -Syu' yerine sadece 'pacman -S' kullanıldı, sistem güncellemesi yapılmayacak
+    sudo pacman -S --noconfirm gcc make ncurses || log_error "Arch Linux bağımlılıkları yüklenirken hata oluştu."
 }
 
 # --- Ana Kurulum Mantığı ---
@@ -97,7 +98,9 @@ fi
 log_info "FocusLog kuruluyor..."
 
 if [ "$INSTALL_METHOD" == "arch" ]; then
-    log_info "Arch Linux için PKGBUILD oluşturuluyor ve doğrudan kurulum yapılıyor."
+    log_info "Arch Linux için bir PKGBUILD dosyası oluşturulmuştur. FocusLog'u bir pacman paketi olarak kurmak isterseniz, bu PKGBUILD'i manuel olarak kullanabilirsiniz."
+    log_info "Ancak, hızlı kullanım için derlenmiş ikili dosya doğrudan /usr/local/bin dizinine kopyalanacaktır."
+
     PKG_BUILD_DIR="/tmp/${APP_NAME}_pkg"
     mkdir -p "$PKG_BUILD_DIR" || log_error "PKGBUILD dizini oluşturulamadı."
 
@@ -131,15 +134,20 @@ package() {
 }
 EOF
 
-    log_info "Arch Linux PKGBUILD dosyası şurada oluşturuldu: $PKG_BUILD_DIR/PKGBUILD"
-    log_info "Bu paketi manuel olarak kurmak için:"
+    log_info "Arch Linux için PKGBUILD dosyası şurada oluşturuldu: $PKG_BUILD_DIR/PKGBUILD"
+    log_info "FocusLog'u bir pacman paketi olarak kurmak için:"
     log_info "  cd $PKG_BUILD_DIR"
     log_info "  makepkg -si"
-    log_info "Ya da 'paru' gibi bir AUR yardımcısı kullanıyorsanız, PKGBUILD'i AUR'a yükleyip oradan kurabilirsiniz."
-    log_info "Şimdilik, hızlı kullanım için ikili dosya doğrudan /usr/local/bin dizinine kuruluyor."
+    log_info "Bu komut, paketi derleyecek ve bağımlılıklarıyla birlikte pacman aracılığıyla yükleyecektir."
+    log_info "Ardından 'pacman -Qs focuslog' komutuyla paketi görebilirsiniz."
+    log_info "Kaldırmak için: 'sudo pacman -R focuslog'"
+    log_info ""
+
+    # Hızlı kullanım için ikili dosyayı kopyala
     sudo install -Dm755 focuslog "/usr/local/bin/${APP_NAME}" || log_error "/usr/local/bin dizinine kurulum başarısız oldu."
     log_info "FocusLog şuraya kuruldu: /usr/local/bin/$APP_NAME"
-    log_info "Kaldırmak için: sudo rm /usr/local/bin/$APP_NAME"
+    log_info "Bu yöntemle yüklenen FocusLog'u kaldırmak için: sudo rm /usr/local/bin/$APP_NAME"
+
 
 else # Debian, Fedora ve diğer genel Linux dağıtımları için
     # /usr/local/bin dizinine kurulum
