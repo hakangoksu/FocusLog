@@ -2,4 +2,3 @@
 
 gcc main.c -o focuslog -lncurses
 ./focuslog
-1

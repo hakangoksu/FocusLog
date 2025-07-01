@@ -1936,4 +1936,3 @@ void draw_idle_bar(const char **current_lang_menu_items) {
 
     free(all_focuses); // Belleği serbest bırak
 }
-1
