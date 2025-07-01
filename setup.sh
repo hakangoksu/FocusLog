@@ -35,7 +35,7 @@ check_command() {
 # Debian/Ubuntu için bağımlılıkları yükler
 install_dependencies_apt() {
     log_info "Debian/Ubuntu için bağımlılıklar yükleniyor..."
-    # 'apt update' kaldırıldı, sadece bağımlılıklar yüklenecek
+    # Sistem güncellemesi kaldırıldı, sadece bağımlılıklar yüklenecek
     sudo apt install -y build-essential libncurses-dev || log_error "Debian/Ubuntu bağımlılıkları yüklenirken hata oluştu."
 }
 
@@ -48,7 +48,7 @@ install_dependencies_dnf() {
 # Arch Linux için bağımlılıkları yükler
 install_dependencies_pacman() {
     log_info "Arch Linux için bağımlılıklar yükleniyor..."
-    # 'pacman -Syu' yerine sadece 'pacman -S' kullanıldı, sistem güncellemesi yapılmayacak
+    # Sistem güncellemesi kaldırıldı, sadece bağımlılıklar yüklenecek
     sudo pacman -S --noconfirm gcc make ncurses || log_error "Arch Linux bağımlılıkları yüklenirken hata oluştu."
 }
 
@@ -86,7 +86,7 @@ fi
 
 # 3. Uygulamayı derle
 log_info "FocusLog derleniyor..."
-make clean || true # Önceki derlemeleri temizle (varsa)
+make clean || true # Önceki derlemeleri temizle (varsayılan olarak hata vermesin)
 make focuslog || log_error "Derleme başarısız oldu. Lütfen sisteminizin derleme ortamını ve ncurses geliştirme kütüphanelerini kontrol edin."
 
 # Derlenmiş ikili dosyanın varlığını kontrol et
