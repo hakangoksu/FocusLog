@@ -1,16 +1,16 @@
 #!/bin/bash
 
-# FocusLog Installation Script
-# This script compiles and integrates the FocusLog application into the system.
+# FocusLog Kurulum Betiği
+# Bu betik, FocusLog uygulamasını derler ve sisteme entegre eder.
 
-set -e # Exit immediately if a command fails
+set -e # Bir komut başarısız olursa hemen çık
 
 APP_NAME="focuslog"
-APP_VERSION="1.0.0" # Application version
-APP_DESCRIPTION="A terminal-based focus timer and statistics application."
-APP_LICENSE="MIT" # License information
+APP_VERSION="1.0.0" # Uygulama sürümü
+APP_DESCRIPTION="Terminal tabanlı bir odaklanma zamanlayıcısı ve istatistik uygulaması."
+APP_LICENSE="GNU" # Lisans bilgisi MIT'den GNU'ya çevrildi
 
-# --- Helper Functions ---
+# --- Yardımcı Fonksiyonlar ---
 
 log_info() {
     echo "INFO: $1"
@@ -23,30 +23,28 @@ log_error() {
 
 check_command() {
     if ! command -v "$1" &> /dev/null; then
-        log_error "Command '$1' not found. Please install '$1' to proceed."
+        log_error "$1 komutu bulunamadı. Lütfen '$1' uygulamasını yükleyin."
     fi
 }
 
 install_dependencies_apt() {
-    log_info "Installing dependencies for Debian/Ubuntu..."
-    # System update removed, only dependencies will be installed
-    sudo apt install -y build-essential libncurses-dev || log_error "Error installing Debian/Ubuntu dependencies."
+    log_info "Debian/Ubuntu için bağımlılıklar yükleniyor..."
+    sudo apt install -y build-essential libncurses-dev || log_error "Debian/Ubuntu bağımlılıkları yüklenirken hata oluştu."
 }
 
 install_dependencies_dnf() {
-    log_info "Installing dependencies for Fedora..."
-    sudo dnf install -y gcc make ncurses-devel || log_error "Error installing Fedora dependencies."
+    log_info "Fedora için bağımlılıklar yükleniyor..."
+    sudo dnf install -y gcc make ncurses-devel || log_error "Fedora bağımlılıkları yüklenirken hata oluştu."
 }
 
 install_dependencies_pacman() {
-    log_info "Installing dependencies for Arch Linux..."
-    # System update removed, only dependencies will be installed
-    sudo pacman -S --noconfirm gcc make ncurses || log_error "Error installing Arch Linux dependencies."
+    log_info "Arch Linux için bağımlılıklar yükleniyor..."
+    sudo pacman -S --noconfirm gcc make ncurses || log_error "Arch Linux bağımlılıkları yüklenirken hata oluştu."
 }
 
-# --- Main Installation Logic ---
+# --- Ana Kurulum Mantığı ---
 
-log_info "Starting FocusLog installation..."
+log_info "FocusLog kurulumu başlatılıyor..."
 
 check_command "gcc"
 check_command "make"
@@ -57,36 +55,39 @@ OS_ID_LIKE=$(grep -E '^ID_LIKE=' /etc/os-release | cut -d= -f2 | tr -d '"' | tr 
 INSTALL_METHOD="generic"
 
 if [[ "$OS_ID" == "arch" ]]; then
-    log_info "Detected operating system: Arch Linux."
+    log_info "Algılanan işletim sistemi: Arch Linux."
     install_dependencies_pacman
     INSTALL_METHOD="arch"
 elif [[ "$OS_ID" == "debian" || "$OS_ID_LIKE" == *"debian"* ]]; then
-    log_info "Detected operating system: Debian/Ubuntu based."
+    log_info "Algılanan işletim sistemi: Debian/Ubuntu tabanlı."
     install_dependencies_apt
     INSTALL_METHOD="debian"
 elif [[ "$OS_ID" == "fedora" || "$OS_ID_LIKE" == *"fedora"* ]]; then
-    log_info "Detected operating system: Fedora based."
+    log_info "Algılanan işletim sistemi: Fedora tabanlı."
     install_dependencies_dnf
     INSTALL_METHOD="fedora"
 else
-    log_info "Detected operating system: Other Linux distribution (ID: $OS_ID, ID_LIKE: $OS_ID_LIKE)."
-    log_info "Attempting generic installation. Please install dependencies manually if necessary."
+    log_info "Algılanan işletim sistemi: Diğer Linux dağıtımı (ID: $OS_ID, ID_LIKE: $OS_ID_LIKE)."
+    log_info "Genel kurulum deneniyor. Gerekirse bağımlılıkları manuel yükleyin."
 fi
 
-log_info "Compiling FocusLog..."
-make clean || true
-make focuslog || log_error "Compilation failed."
+log_info "FocusLog derleniyor..."
+# make clean komutunun hata vermemesi için Makefile'ın varlığını kontrol et
+if [ -f "Makefile" ]; then
+    make clean || true
+fi
+make focuslog || log_error "Derleme başarısız oldu. Lütfen Makefile ve main.c dosyalarının mevcut olduğundan ve derleme ortamınızın doğru olduğundan emin olun."
 
 if [ ! -f "focuslog" ]; then
-    log_error "Compiled 'focuslog' binary not found."
+    log_error "Derlenmiş 'focuslog' ikili dosyası bulunamadı."
 fi
 
-log_info "Installing FocusLog..."
+log_info "FocusLog kuruluyor..."
 
 if [ "$INSTALL_METHOD" == "arch" ]; then
-    log_info "PKGBUILD file created in /tmp directory."
+    log_info "PKGBUILD dosyası /tmp dizininde oluşturuldu."
     PKG_BUILD_DIR="/tmp/${APP_NAME}_pkg"
-    mkdir -p "$PKG_BUILD_DIR" || log_error "Could not create PKGBUILD directory."
+    mkdir -p "$PKG_BUILD_DIR" || log_error "PKGBUILD dizini oluşturulamadı."
 
     cat <<EOF > "$PKG_BUILD_DIR/PKGBUILD"
 # Maintainer: Hakan Göksu
@@ -99,8 +100,9 @@ url="https://github.com/hakangoksu/FocusLog"
 license=('$APP_LICENSE')
 depends=('ncurses')
 makedepends=('gcc' 'make')
+# Kaynak dosyayı doğrudan GitHub'daki bir sürüm etiketinden çekiyoruz
 source=("${pkgname}-${pkgver}.tar.gz::https://github.com/hakangoksu/FocusLog/archive/refs/tags/v${pkgver}.tar.gz")
-sha256sums=('SKIP')
+sha256sums=('SKIP') # ÖNEMLİ: Gerçek bir paket için bu 'SKIP' değerini gerçek checksum ile değiştirin!
 
 build() {
   cd "\$srcdir/${pkgname}-${pkgver}"
@@ -113,19 +115,21 @@ package() {
 }
 EOF
 
-    log_info "If you want to install FocusLog as a package:"
+    log_info "FocusLog'u bir pacman paketi olarak kurmak için:"
     log_info "  cd $PKG_BUILD_DIR && makepkg -si"
-    log_info "To uninstall: sudo pacman -R $APP_NAME"
+    log_info "Bu komut, paketi derleyecek ve bağımlılıklarıyla birlikte pacman aracılığıyla yükleyecektir."
+    log_info "Ardından 'pacman -Qs focuslog' komutuyla paketi görebilirsiniz."
 
-    sudo install -Dm755 focuslog "/usr/local/bin/${APP_NAME}" || log_error "Installation failed."
-    log_info "FocusLog installed to: /usr/local/bin/$APP_NAME"
-    log_info "To uninstall: sudo rm /usr/local/bin/$APP_NAME"
+    sudo install -Dm755 focuslog "/usr/local/bin/${APP_NAME}" || log_error "Kurulum başarısız oldu."
+    log_info "FocusLog şuraya kuruldu: /usr/local/bin/$APP_NAME"
 else
-    sudo install -Dm755 focuslog "/usr/local/bin/${APP_NAME}" || log_error "Installation failed."
-    log_info "FocusLog installed to: /usr/local/bin/$APP_NAME"
-    log_info "To uninstall: sudo rm /usr/local/bin/$APP_NAME"
+    sudo install -Dm755 focuslog "/usr/local/bin/${APP_NAME}" || log_error "Kurulum başarısız oldu."
+    log_info "FocusLog şuraya kuruldu: /usr/local/bin/$APP_NAME"
 fi
 
-log_info "FocusLog installation completed."
-make clean || true
+log_info "FocusLog kurulumu tamamlandı."
+# make clean komutunun hata vermemesi için Makefile'ın varlığını kontrol et
+if [ -f "Makefile" ]; then
+    make clean || true
+fi
 exit 0
