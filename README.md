@@ -1,3 +1,5 @@
+> **This project continues as [qfocus](https://github.com/quvyta/focus).** This repository is kept read-only for reference.
+
 # FocusLog
 
 **FocusLog** is a terminal-based, lightweight, and fast focus timer and productivity tracker. Built with C and the `ncurses` library, it offers an aesthetic and efficient experience directly from the terminal.
